@@ -1,0 +1,60 @@
+name: Publish to NPM
+
+on:
+  push:
+    branches:
+      - npm-publish
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # 必须：用于 npm provenance (来源验证) 以显示可信与 Actions 信息
+    steps:
+      - name: 检出仓库代码 (Checkout repository)
+        uses: actions/checkout@v4
+
+      - name: 配置 tree-sitter (Setup tree-sitter)
+        uses: tree-sitter/setup-action/cli@v2
+        with:
+          tree-sitter-ref: v0.26.8
+
+      - name: 生成 parser 代码 (Generate tree-sitter parser)
+        run: python3 scripts/generate.py
+
+      - name: 构建 WASM 产物 (Build WASM)
+        run: tree-sitter build --wasm
+
+      - name: 配置 Node.js 环境 (Setup Node.js)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '25.5.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 修改 package.json
+        run: |
+          # 获取 commit 简短哈希
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          
+          # 使用 jq 更新 package.json 字段
+          jq --arg name "@unmbt/tree-sitter-moonbit" \
+             --arg url "git+https://github.com/unmbt/tree-sitter-moonbit.git" \
+             --arg sha "$COMMIT_SHA" \
+             '.name = $name | .repository.url = $url | .version = (.version + "-git." + $sha) | del(.scripts.install)' \
+             package.json > package.json.tmp && mv package.json.tmp package.json
+             
+          # 打印修改后的 package.json 用于调试查看
+          cat package.json
+
+      - name: 安装依赖 (Install dependencies)
+        run: npm ci
+
+      - name: 移除 binding.gyp
+        run: rm -f binding.gyp
+
+      - name: 发布到 npm (Publish to npm)
+        # --provenance 参数将向 npm 提交签名，验证其通过 GitHub Actions 构建
+        run: npm publish --provenance --access public --tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
